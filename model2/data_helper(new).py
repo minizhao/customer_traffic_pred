@@ -72,16 +72,19 @@ def data_loader(train=True,args=None):
 	train_x=[]
 	train_y=[]
 
-	
-
 	#加载预测数据
 	if not train and args != None:
+
+		
 		store=args['storeId']	#店铺号数据
 		starttime=args['starttime']
 		it=args['preds'] #需要预测的是客流量还是人流量
 		day=args['day']
 		t=args['starttime']#时间点
 		last_day=max(days)
+		df=fill_future_data(df,days,day,store,t)
+		# print df.shape
+		
 		# if day in days:	
 			
 		# sub_df=df[np.logical_and(df['day']==day,df['storeId']==store)]
@@ -94,9 +97,11 @@ def data_loader(train=True,args=None):
 		result_f=np.concatenate((time_f, three_hours_f,week_f,store_f,traffic_customer_f)).astype(float)
 
 		return result_f
+		
 
 	#加载训练数据
 	else:	
+
 		for store in storeId:
 			for it in predict_values:
 				for da in days:
@@ -132,7 +137,9 @@ def judge(tar_time,all_time):
 
 def time_feature(df,da,t,store,it):
 	sub_df_befor=df[np.logical_and(df['day']<=da,df['starttime']==t)]
+	
 	sub_df_befor=sub_df_befor[df['storeId']==store]
+
 	if it=='traffic':
 		bumber_list=np.array(sub_df_befor['preds1'].tolist()).astype(float)
 	elif it=='customer':
@@ -140,6 +147,7 @@ def time_feature(df,da,t,store,it):
 	mean_=np.mean(bumber_list)
 	var_=np.var(bumber_list)
 	mediam_=np.median(bumber_list)
+
 	percentile_25=np.percentile(bumber_list,25)
 	percentile_75=np.percentile(bumber_list,75)
 
@@ -169,10 +177,12 @@ def three_hours_feature(df,days,da,tar_time,store,it,train=True):
 
 
 	else:
+
 		num_list=[]
 		sub_df=df[np.logical_and(df['day']==da,df['storeId']==store)]
 		before_three_h=[tar_time-1,tar_time-2,tar_time-3]
 		for h in before_three_h:
+			if h<0:h=4
 			sub_data=sub_df[sub_df['starttime']==h]
 			if sub_data.shape[0]==0:
 				sub_store_h=df[np.logical_and(df['starttime']==h,df['storeId']==store)]
@@ -192,7 +202,76 @@ def three_hours_feature(df,days,da,tar_time,store,it,train=True):
 		return result
 
 
+def extract_fill_features(df,store,t,day):
+	
+	days=df['day'].drop_duplicates() # all day date in the dataset
+	storeId=df['storeId'].drop_duplicates() # all day date in the dataset
+	predict_values=['traffic','customer']
+	results=[]
+	
+	for it in predict_values:
+		# it=args['preds'] #需要预测的是客流量还是人流量
+		time_f=time_feature(df,day,t,store,it)
+		three_hours_f=three_hours_feature(df,days,day,t,store,it,False) # three hours before feature
+		week_f=week_feature(day)
+		store_f=store_feature(storeId,store)
+		traffic_customer_f=traffic_customer_feature(it)
+		result_f=np.concatenate((time_f, three_hours_f,week_f,store_f,traffic_customer_f)).astype(float)
+		results.append(result_f)
+	
+	return results
 
+
+def get_fill_value(fill_days,fill_hours,df,store):
+	model= joblib.load('train_model.m')
+	columns=['storeId','day','preds1','preds2','starttime']
+	results_list=[]
+
+	last_point,tar_time=fill_hours
+	last_day=fill_days[0]
+
+	#先把最后一天的缺失时间点填充了
+	if last_point==23:
+		pass
+	else:
+		for h in range(last_point,24):		
+			features_=extract_fill_features(df,store,h,last_day)
+			pres_values=model.predict(features_)
+			temp=pd.DataFrame([[store,last_day,pres_values[0],pres_values[1],22]],columns=columns)
+			df=df.append(temp,ignore_index=True)
+
+	#再填间隔整日的数据
+	for day in fill_days[1:]:
+		for h in range(3,24):				
+			features_=extract_fill_features(df,store,h,day)
+			pres_values=model.predict(features_)
+			temp=pd.DataFrame([[store,day,pres_values[0],pres_values[1],22]],columns=columns)
+			df=df.append(temp,ignore_index=True)
+
+	return  df
+
+
+def fill_future_data(df,days,day,store,tar_time):
+	last_day=max(days)
+	sub_df=df[np.logical_and(df['day']==last_day,df['storeId']==store)]
+	last_point=max(sub_df['starttime'])
+
+	d_last = datetime.date(*[int(x) for x in last_day.split('-')])
+	d_pred= datetime.date(*[int(x) for x in day.split('-')])
+	days_span=(d_pred-d_last).days #差了几天
+	if days_span<0 or (days_span==0 and last_point>tar_time):
+		return df
+	else:
+		fill_days=[]
+		for i in range(0,days_span+1):
+			d=d_last+datetime.timedelta(days=i)
+			d_to_str=d.strftime('%Y-%m-%d')
+			fill_days.append(d_to_str)
+
+		fill_hours=[last_point,tar_time]
+		my_df=get_fill_value(fill_days,fill_hours,df,store)
+		return my_df
+		
 
 def week_feature(da):
 	da_int_list=[int(x) for x in da.split('-')]
