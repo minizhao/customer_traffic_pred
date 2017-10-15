@@ -1,95 +1,296 @@
-	# -*- coding: utf-8 -*-
-	import data_helper
-	from sklearn.externals import joblib
-	import time,datetime
-	import random
-	import pandas as pd
-	from flask import *
+# -*- coding: utf-8 -*-
+import mysql.connector
+import pandas as pd
+import numpy as np
+import re
+import datetime
+import time
+import time,datetime
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.cross_validation import train_test_split
+from sklearn.externals import joblib
 
-	app = Flask(__name__)
-	# http://127.0.0.1:5000/analysis?function=traffic&storeId=5&hour=9,20&daySpan=2017-09-20,2017-9-25
-	@app.route('/analysis/', methods=['GET'])
 
+def str_to_list(str_=''):
+		rr = re.compile(r'[\d]+,[\d]+')
+		match_list=rr.findall(str_)
+		result=list(map(lambda x : x.split(','),match_list))
+		return result
 
-	def analyse():
+def data_sql_helper():
+	conn = mysql.connector.connect(user='root',password='123456',host='127.0.0.1',port='3306',\
+		database='zdb_udc')
+	cursor = conn.cursor()
+	count = cursor.execute('select * from zt_traffic_prediction')
 
-		time_point = [int(x) for x in str(request.args.get('hour')).split(',') ] #预测几点
-		dates = str(request.args.get('daySpan')).split(',')  #预测几月到几月
-		function = str(request.args.get('function'))
-		storeId = int(str(request.args.get('storeId')))
-		method=1  #method 0 or 1 ,method 0:精确预测，耗时多; method 1:历史数据预测，耗时少;
+	results = cursor.fetchall()
+	df_dataset=pd.DataFrame(columns=['storeId','day','preds1','preds2','starttime']) #总数据表
 
-		d_start = datetime.date(*[int(x) for x in str(dates[0]).split('-')])
-		d_end= datetime.date(*[int(x) for x in str(dates[-1]).split('-')])
-		days_span=(d_end-d_start).days #差了几天
+	preds_data=[]
+	storeid_data=[]
+	days_data=[]
+	starttime_data=[]
+
+	for record in results:
+		index,storeid,day,preds=record
+
+		preds=preds.decode('utf-8')
+		preds_list=(str_to_list(preds))
+
+		row_num=len(preds_list)
+
+		preds_data.extend(preds_list)
+		storeid_data.extend([storeid]*row_num)
+		day=day.strftime('%Y-%m-%d')
+		days_data.extend([day]*row_num)
+		starttime_data.extend(range(0,24))
 		
-		df=pd.DataFrame()
+	preds_data=np.array(preds_data)
 
-		result_dic=dict()
-		for i in range(days_span+1):
-			d=d_start+datetime.timedelta(days=i)
-			d_to_str=d.strftime('%Y-%m-%d')
-			# print d_to_str
-			for time in range(time_point[0],time_point[-1]+1):
+	df_dataset['storeId']=storeid_data
+	df_dataset['day']=days_data
 
-				result,df=get_reslut(d_to_str,time,storeId,function,method,df)
-				if method==1:
-					radm=random.randint(0, 50)
-					output=(result+radm)
-				else:
-					output=(result)
-				result_dic[str(d_to_str)+','+str(time)]=str(int(output))
+	df_dataset['preds1']=preds_data[:,0]
+	df_dataset['preds2']=preds_data[:,1]
+	df_dataset['starttime']=starttime_data
+	conn.close()
 
-		resp = { "msg":"OK","code":0,"data": result_dic}
-		return jsonify(resp)
+	return df_dataset
 
 
-	def get_reslut(d_to_str,time,storeId,pred,method,df):
+def data_loader(train=True,args=None,method=0,df=pd.DataFrame()):
+	# print df.shape
+	if df.shape[0] ==0:
+		df=data_sql_helper()
 
-		args=dict()
-		args['storeId']=storeId
-		args['starttime']=time
-		args['preds']=pred #人流客流特征参数 'traffic'/'customer'
-		args['day']=d_to_str
+	# df=pd.read_csv('1.txt',sep=',')
+	days=df['day'].drop_duplicates() # all day date in the dataset
+	storeId=df['storeId'].drop_duplicates() # all day date in the dataset
+	predict_values=['traffic','customer']
 
-		args_pref_features,df=data_helper.data_loader(train=False,args=args,method=method,df=df)
-		model= joblib.load('train_model.m')
-		return model.predict([args_pref_features]),df
+	target_times=range(9,23)# predict target hours value 
+
+	train_x=[]
+	train_y=[]
+
+	#加载预测数据
+	if not train and args != None:
+
 		
-	'''
-	def run():
+		store=args['storeId']	#店铺号数据
+		starttime=args['starttime']
+		it=args['preds'] #需要预测的是客流量还是人流量
+		day=args['day']
+		t=args['starttime']#时间点
+		last_day=max(days)
+		if method==0:
+			df=fill_future_data(df,days,day,store,t)
+		else: pass
+		# print df.shape
+		
+		# if day in days:	
+			
+		# sub_df=df[np.logical_and(df['day']==day,df['storeId']==store)]
 
-		date=['2017-08-10','2017-08-13']
-		time_point=[9,22]
-		storeId=3
-		method=0  #method 0 or 1 ,method 0:精确预测，耗时多; method 1:历史数据预测，耗时少;
+		time_f=time_feature(df,day,t,store,it)
+		three_hours_f=three_hours_feature(df,days,day,t,store,it,False) # three hours before feature
+		week_f=week_feature(day)
+		store_f=store_feature(storeId,store)
+		traffic_customer_f=traffic_customer_feature(it)
+		result_f=np.concatenate((time_f, three_hours_f,week_f,store_f,traffic_customer_f)).astype(float)
 
-		d_start = datetime.date(*[int(x) for x in date[0].split('-')])
-		d_end= datetime.date(*[int(x) for x in date[-1].split('-')])
+		return result_f,df
+		
 
-		days_span=(d_end-d_start).days #差了几天
+	#加载训练数据
+	else:	
 
-		df=pd.DataFrame()
-		for i in range(days_span+1):
-			d=d_start+datetime.timedelta(days=i)
+		for store in storeId:
+			for it in predict_values:
+				for da in days:
+					# da: one day ,2017-08-05,...
+					sub_df=df[np.logical_and(df['day']==da,df['storeId']==store)]
+
+					all_time=sub_df['starttime'] # this day and store all hour value
+
+					time_available=list(map(lambda x:judge(x,all_time) ,target_times))
+					time_available=[x for x in time_available if x !=None]	
+
+					for t in time_available:	
+						# t is one hours value 
+						time_f=time_feature(df,da,t,store,it)	# hours feature
+						three_hours_f,pred_target=three_hours_feature(df,days,da,t,store,it) # three hours before feature
+						week_f=week_feature(da)	# week feature
+						store_f=store_feature(storeId,store)
+						traffic_customer_f=traffic_customer_feature(it)
+						# all feature dims 16:x1,x2....x16
+						result_f=np.concatenate((time_f, three_hours_f,week_f,store_f,traffic_customer_f)).astype(float)
+						# pred_target  :y
+						train_x.append(result_f)
+						train_y.append(pred_target)
+
+		assert len(train_x)==len(train_y)
+		return train_x,train_y
+
+
+def judge(tar_time,all_time):
+	tar_list=[tar_time,tar_time-1,tar_time-2,tar_time-3]
+	if len(set(tar_list).difference(set(all_time)))==0:
+		return tar_time
+
+def time_feature(df,da,t,store,it):
+	sub_df_befor=df[np.logical_and(df['day']<=da,df['starttime']==t)]
+	
+	sub_df_befor=sub_df_befor[df['storeId']==store]
+
+	if it=='traffic':
+		bumber_list=np.array(sub_df_befor['preds1'].tolist()).astype(float)
+	elif it=='customer':
+		bumber_list=np.array(sub_df_befor['preds2'].tolist()).astype(float)
+	mean_=np.mean(bumber_list)
+	var_=np.var(bumber_list)
+	mediam_=np.median(bumber_list)
+
+	percentile_25=np.percentile(bumber_list,25)
+	percentile_75=np.percentile(bumber_list,75)
+
+	return [mean_,var_,mediam_,percentile_25,percentile_75]
+
+
+def three_hours_feature(df,days,da,tar_time,store,it,train=True):
+	
+	#训练调用
+	if train:
+		sub_df=df[np.logical_and(df['day']==da,df['storeId']==store)]
+		tar_list=[tar_time,tar_time-1,tar_time-2,tar_time-3]
+		num_list=[]
+		for h in tar_list:
+			sub_data=sub_df[np.logical_and(sub_df['starttime']==h,sub_df['storeId']==store)]
+			assert sub_data.shape[0]==1
+			if it=='traffic':
+				num_list.append(sub_data['preds1'].tolist()[0])
+			elif it=='customer':
+				num_list.append(sub_data['preds2'].tolist()[0])
+
+
+		num_list=np.array(num_list).astype(float)
+		result=[np.mean(num_list[1:]),float((num_list[2]-num_list[1]))/(num_list[1]+1),\
+				float((num_list[3]-num_list[2]))/(num_list[2]+1)]
+		return result,num_list[0]
+
+
+	else:
+
+		num_list=[]
+		sub_df=df[np.logical_and(df['day']==da,df['storeId']==store)]
+		before_three_h=[tar_time-1,tar_time-2,tar_time-3]
+		for h in before_three_h:
+			if h<0:h=4
+			sub_data=sub_df[sub_df['starttime']==h]
+			if sub_data.shape[0]==0:
+				sub_store_h=df[np.logical_and(df['starttime']==h,df['storeId']==store)]
+				if it=='traffic':
+					num_list.append(np.mean(np.array(sub_store_h['preds1']).astype(float)))
+				elif it=='customer':
+					num_list.append(np.mean(np.array(sub_store_h['preds1']).astype(float)))
+			else:
+				if it=='traffic':
+					num_list.append(sub_data['preds1'].tolist()[0])
+				elif it=='customer':
+					num_list.append(sub_data['preds2'].tolist()[0])
+
+		num_list=np.array(num_list).astype(float)
+		result=[np.mean(num_list),float((num_list[1]-num_list[0]))/(num_list[0]+1),\
+				float((num_list[2]-num_list[1]))/(num_list[1]+1)]
+		return result
+
+
+def extract_fill_features(df,store,t,day):
+	
+	days=df['day'].drop_duplicates() # all day date in the dataset
+	storeId=df['storeId'].drop_duplicates() # all day date in the dataset
+	predict_values=['traffic','customer']
+	results=[]
+	
+	for it in predict_values:
+		# it=args['preds'] #需要预测的是客流量还是人流量
+		time_f=time_feature(df,day,t,store,it)
+		three_hours_f=three_hours_feature(df,days,day,t,store,it,False) # three hours before feature
+		week_f=week_feature(day)
+		store_f=store_feature(storeId,store)
+		traffic_customer_f=traffic_customer_feature(it)
+		result_f=np.concatenate((time_f, three_hours_f,week_f,store_f,traffic_customer_f)).astype(float)
+		results.append(result_f)
+	
+	return results
+
+
+def get_fill_value(fill_days,fill_hours,df,store):
+	model= joblib.load('train_model.m')
+	columns=['storeId','day','preds1','preds2','starttime']
+	results_list=[]
+
+	last_point,tar_time=fill_hours
+	last_day=fill_days[0]
+
+	#先把最后一天的缺失时间点填充了
+	if last_point==23:
+		pass
+	else:
+		for h in range(last_point,24):		
+			features_=extract_fill_features(df,store,h,last_day)
+			pres_values=model.predict(features_)
+			temp=pd.DataFrame([[store,last_day,pres_values[0],pres_values[1],22]],columns=columns)
+			df=df.append(temp,ignore_index=True)
+
+	#再填间隔整日的数据
+	for day in fill_days[1:]:
+		for h in range(3,24):				
+			features_=extract_fill_features(df,store,h,day)
+			pres_values=model.predict(features_)
+			temp=pd.DataFrame([[store,day,pres_values[0],pres_values[1],22]],columns=columns)
+			df=df.append(temp,ignore_index=True)
+
+	return  df
+
+
+def fill_future_data(df,days,day,store,tar_time):
+	last_day=max(days)
+	sub_df=df[np.logical_and(df['day']==last_day,df['storeId']==store)]
+	last_point=max(sub_df['starttime'])
+
+	d_last = datetime.date(*[int(x) for x in last_day.split('-')])
+	d_pred= datetime.date(*[int(x) for x in day.split('-')])
+	days_span=(d_pred-d_last).days #差了几天
+	if days_span<0 or (days_span==0 and last_point>tar_time):
+		return df
+	else:
+		fill_days=[]
+		for i in range(0,days_span+1):
+			d=d_last+datetime.timedelta(days=i)
 			d_to_str=d.strftime('%Y-%m-%d')
-			# print d_to_str
-			for time in range(time_point[0],time_point[-1]+1):
-				output=[]
-				for pred in ['traffic','customer']:
-					result,df=get_reslut(d_to_str,time,storeId,pred,method,df)
-					if method==1:
-						radm=random.randint(0, 50)
-						output.append(result+radm)
-					else:
-						output.append(result)
-				print d_to_str,time,[int(x) for x in output]
-	'''
+			fill_days.append(d_to_str)
 
+		fill_hours=[last_point,tar_time]
+		my_df=get_fill_value(fill_days,fill_hours,df,store)
+		return my_df
+		
 
+def week_feature(da):
+	da_int_list=[int(x) for x in da.split('-')]
+	day = datetime.datetime(*da_int_list).weekday()
+	one_hot=np.zeros(7)
+	one_hot[day]=1.0
+	return one_hot
+	
 
+def store_feature(storeId,store):
+	zero_enc=np.zeros(len(storeId)).tolist()
+	zero_enc[storeId.tolist().index(store)]=1
+	return zero_enc
 
-	if __name__ == '__main__':
-
-		app.run(debug=True)
-
+def traffic_customer_feature(it):
+	if it=='traffic' :
+		return [1,0]
+	elif it=='customer':
+		return [0,1]
