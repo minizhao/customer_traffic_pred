@@ -4,14 +4,21 @@ import math
 import random
 import pandas as pd
 import mysql.connector
+import numpy as np
+# import pylab as pl
+import matplotlib.pyplot as plt
 
 def get_random_value(days_points):
 	
 	pred=[]
+
+	x=np.linspace(0,4*np.pi,len(days_points)*24)
+	y=np.sin(x)
+
 	for x in range(1,len(days_points)+1):
 		temp=[]
 		for _ in range(0,24):
-			radians(x)
+
 			radm1=random.randint(0, 10)
 			radm2=random.randint(0, 10)
 			temp.append('['+str(int(abs(math.cos(radm1*x)*5000)))+','+str(int(abs(math.cos(radm2*x)*400)))+']')
@@ -44,17 +51,26 @@ def insert_data(day):
 
 if __name__ == '__main__':
 		
-	d_start = datetime.date(2017,9,5)
-	d_end= datetime.date(2017,9,20)
-	days_span=(d_end-d_start).days
-	days=[]
-	for i in range(days_span+1):
-		d=d_start+datetime.timedelta(days=i)
-		d_to_str=d.strftime('%Y-%m-%d')	
-		days.append(d_to_str)
+	# d_start = datetime.date(2017,9,5)
+	# d_end= datetime.date(2017,9,20)
+	# days_span=(d_end-d_start).days
+	# days=[]
+	# for i in range(days_span+1):
+	# 	d=d_start+datetime.timedelta(days=i)
+	# 	d_to_str=d.strftime('%Y-%m-%d')	
+	# 	days.append(d_to_str)
 
-	# df=get_random_value(days)
-	insert_data(days)
+	# # df=get_random_value(days)
+	# insert_data(days)
+	# for i in np.linspace(0,4*np.pi,100):
+	# 	print math.cos(i)
+	x=np.linspace(0,4*np.pi,100)
+	y=np.sin(x)
+	# plt.plot(x,math.sin(x))
+	plt.plot(x,y,label="$sin(x)$",color="red",linewidth=2)
+
+	plt.show()
+
 	# print df 
 	# for index, row in df.iterrows():
 	# 	print len(row['preds'])
